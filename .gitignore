@@ -1,0 +1,4 @@
+Recorder/.build/
+Recorder/Recorder.app/
+transcribe/.venv/
+__pycache__/
