@@ -2,12 +2,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "Recorder",
+    name: "Dott",
     platforms: [.macOS(.v15)],
     targets: [
         .executableTarget(
-            name: "Recorder",
-            path: "Sources/Recorder",
+            name: "Dott",
+            path: "Sources/Dott",
             swiftSettings: [.swiftLanguageMode(.v5)]
         )
     ]

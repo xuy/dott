@@ -1,4 +1,6 @@
-Recorder/.build/
-Recorder/Recorder.app/
+Dott/.build/
+Dott/Dott.app/
+Dott/*.icns
+Dott/icon.iconset/
 transcribe/.venv/
 __pycache__/

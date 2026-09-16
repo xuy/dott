@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct RecorderApp: App {
+struct DottApp: App {
     @StateObject private var capture = MeetingCapture()
 
     var body: some Scene {

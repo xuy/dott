@@ -1,35 +1,46 @@
 # meeting-recorder
 
 Minimal Granola-style meeting recorder + offline transcription for macOS.
+The app itself is called **Dott** (arbitrary name, matches its single-dot
+menu-bar glyph — no deeper meaning).
 
 Two independent pieces:
 
-- **`Recorder/`** — a Swift menu-bar app. One `ScreenCaptureKit` stream
+- **`Dott/`** — a Swift menu-bar app. One `ScreenCaptureKit` stream
   captures system audio (the other participants, whatever's coming out of
   your speakers/AirPods) *and* the microphone (you) on a shared clock, and
   writes them to two separate WAV files per session. No virtual audio device,
-  no BlackHole, no manual routing.
+  no BlackHole, no manual routing. The menu-bar icon is a plain `○`/`●`
+  glyph, no text, so it stays unremarkable during screen sharing.
 - **`transcribe/`** — a Python script using `mlx-whisper` (Apple Silicon,
   fully offline) to transcribe both files and merge them into one
   chronological, speaker-labeled transcript.
 
 Recordings land in `~/MeetingRecordings/<timestamp>/{mic.wav,system.wav}`.
 
-## Setup
+## Install
 
 ```bash
-cd Recorder
-./build_app.sh
-open Recorder.app
+cd Dott
+./build_app.sh            # builds, generates Dott.icns, assembles Dott.app
+cp -R Dott.app /Applications/
+open /Applications/Dott.app
 ```
+
+Now it's a normal installed app — findable via Spotlight/Launchpad. To have
+it start automatically at login: System Settings > General > Login Items &
+Extensions > add `/Applications/Dott.app`.
 
 On first "Start Recording", macOS will prompt for **Screen Recording** and
 **Microphone** access (System Settings > Privacy & Security). Grant both,
 then click Start Recording again. Because the app is ad-hoc signed with a
-fixed bundle identifier, these grants persist across rebuilds.
+fixed bundle identifier, these grants persist across rebuilds (but changing
+the bundle id or moving the app to a new location, as we just did, counts
+as a new app to macOS and needs a fresh grant once).
 
-Click the menu-bar icon to Start/Stop. Files show up under
-`~/MeetingRecordings/`.
+Click the menu-bar `○` icon to Start/Stop. Files show up under
+`~/MeetingRecordings/`. To rebuild after editing source, re-run
+`./build_app.sh` and re-copy to `/Applications/`.
 
 ## Transcribing
 
