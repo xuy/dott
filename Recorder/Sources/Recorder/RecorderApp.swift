@@ -8,7 +8,10 @@ struct RecorderApp: App {
         MenuBarExtra {
             MenuContent(capture: capture)
         } label: {
-            Text(capture.isRecording ? "\u{25CF} \(capture.elapsedString)" : "\u{25CB} Rec")
+            // Single glyph, no text -- stays unremarkable if this screen
+            // (menu bar included) is ever what's being shared in a meeting.
+            Image(systemName: capture.isRecording ? "circle.fill" : "circle")
+                .font(.system(size: 10))
         }
         .menuBarExtraStyle(.menu)
     }
