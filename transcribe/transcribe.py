@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
-"""Offline-transcribe a meeting recorded by Recorder.app.
+"""Offline-transcribe a meeting recorded by Dott.
 
-Transcribes mic.wav and system.wav separately (so each side of the call
-comes with a real timestamp from its own audio), then interleaves the
+Transcribes the mic and system-audio tracks separately (so each side of the
+call comes with a real timestamp from its own audio), then interleaves the
 segments chronologically with "Me" / "Them" labels -- a free stand-in for
 speaker diarization, since the two streams already are the two speakers.
+
+Accepts whatever audio format Dott wrote (m4a, wav, ...) -- anything ffmpeg
+can decode, since that's what both mlx_whisper and our own silence check
+use under the hood.
 
 Usage:
     transcribe.py <session_dir> [--model mlx-community/whisper-large-v3-turbo]
 """
 import argparse
+import subprocess
 import sys
-import warnings
 from pathlib import Path
 
 import mlx_whisper
 import numpy as np
-from scipy.io import wavfile
 
 DEFAULT_MODEL = "mlx-community/whisper-large-v3-turbo"
 
@@ -28,6 +31,17 @@ DEFAULT_MODEL = "mlx-community/whisper-large-v3-turbo"
 # over 30s of pure silence -- it genuinely "believes" it heard that. So we
 # gate on measured audio energy instead, independent of what Whisper thinks.
 SILENCE_DBFS_THRESHOLD = -50.0
+ENERGY_SAMPLE_RATE = 16_000  # plenty for an RMS silence check, decodes fast
+
+
+def load_pcm(path: Path, sample_rate: int = ENERGY_SAMPLE_RATE) -> np.ndarray:
+    """Decode any audio file to mono float32 PCM via ffmpeg."""
+    cmd = [
+        "ffmpeg", "-nostdin", "-v", "quiet", "-i", str(path),
+        "-f", "f32le", "-ac", "1", "-ar", str(sample_rate), "-",
+    ]
+    out = subprocess.run(cmd, stdout=subprocess.PIPE, check=True).stdout
+    return np.frombuffer(out, dtype=np.float32)
 
 
 def segment_dbfs(samples: np.ndarray, sample_rate: int, start: float, end: float) -> float:
@@ -44,19 +58,25 @@ def transcribe_file(path: Path, model: str) -> list[dict]:
     result = mlx_whisper.transcribe(str(path), path_or_hf_repo=model)
     segments = result["segments"]
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", wavfile.WavFileWarning)
-        sample_rate, samples = wavfile.read(path)
+    samples = load_pcm(path)
 
     kept = [
         s
         for s in segments
-        if segment_dbfs(samples, sample_rate, s["start"], s["end"]) > SILENCE_DBFS_THRESHOLD
+        if segment_dbfs(samples, ENERGY_SAMPLE_RATE, s["start"], s["end"])
+        > SILENCE_DBFS_THRESHOLD
     ]
     dropped = len(segments) - len(kept)
     if dropped:
         print(f"  dropped {dropped} silent segment(s)", file=sys.stderr)
     return kept
+
+
+def find_track(session_dir: Path, stem: str) -> Path:
+    matches = sorted(session_dir.glob(f"{stem}.*"))
+    if not matches:
+        sys.exit(f"No {stem}.* file found in {session_dir}")
+    return matches[0]
 
 
 def format_timestamp(seconds: float) -> str:
@@ -74,10 +94,8 @@ def main() -> None:
     args = parser.parse_args()
 
     session_dir = args.session_dir
-    mic_path = session_dir / "mic.wav"
-    system_path = session_dir / "system.wav"
-    if not mic_path.exists() or not system_path.exists():
-        sys.exit(f"Expected mic.wav and system.wav in {session_dir}")
+    mic_path = find_track(session_dir, "mic")
+    system_path = find_track(session_dir, "system")
 
     entries = []
     for path, speaker in [(mic_path, "Me"), (system_path, "Them")]:

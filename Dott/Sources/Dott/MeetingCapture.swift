@@ -6,8 +6,14 @@ import ScreenCaptureKit
 
 final class MeetingCapture: NSObject, ObservableObject {
     @Published var isRecording = false
+    // A set, not a single Bool: back-to-back meetings can leave more than one
+    // transcription running at once, and the UI shouldn't say "done" just
+    // because the most-recently-started one finished first.
+    @Published private var activeTranscriptions: Set<URL> = []
+    var isTranscribing: Bool { !activeTranscriptions.isEmpty }
     @Published var elapsedString = "00:00"
     @Published var lastSessionDir: URL?
+    @Published var lastTranscriptPath: URL?
     @Published var lastError: String?
 
     static let recordingsRoot: URL = {
@@ -16,6 +22,16 @@ final class MeetingCapture: NSObject, ObservableObject {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
     }()
+
+    // This is a personal single-machine tool, not a relocatable app -- these
+    // paths point at the sibling `transcribe/` checkout that ships alongside
+    // Dott's own source in ~/src/meeting-recorder. Update if you move it.
+    private static let repoRoot = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("src/meeting-recorder", isDirectory: true)
+    private static let transcribePython = repoRoot
+        .appendingPathComponent("transcribe/.venv/bin/python3")
+    private static let transcribeScript = repoRoot
+        .appendingPathComponent("transcribe/transcribe.py")
 
     private var stream: SCStream?
     private var systemAudioFile: AVAudioFile?
@@ -51,8 +67,56 @@ final class MeetingCapture: NSObject, ObservableObject {
                 NSLog("Error stopping capture: \(error)")
             }
             await MainActor.run {
+                let sessionDir = self.lastSessionDir
                 self.finishRecording()
+                if let sessionDir {
+                    self.transcribe(sessionDir)
+                }
             }
+        }
+    }
+
+    private func transcribe(_ sessionDir: URL) {
+        guard FileManager.default.fileExists(atPath: Self.transcribePython.path) else {
+            lastError = "Transcription venv not found at \(Self.transcribePython.path)"
+            return
+        }
+        activeTranscriptions.insert(sessionDir)
+        lastError = nil
+
+        let process = Process()
+        process.executableURL = Self.transcribePython
+        process.arguments = [Self.transcribeScript.path, sessionDir.path]
+        let stderrPipe = Pipe()
+        process.standardError = stderrPipe
+
+        // Apps launched from Finder/Spotlight/LaunchServices don't inherit
+        // the shell's PATH, so `ffmpeg` (Homebrew, /opt/homebrew/bin) is
+        // invisible to child processes unless we add it back explicitly.
+        var environment = ProcessInfo.processInfo.environment
+        let extraPaths = "/opt/homebrew/bin:/usr/local/bin"
+        environment["PATH"] = extraPaths + ":" + (environment["PATH"] ?? "/usr/bin:/bin")
+        process.environment = environment
+
+        process.terminationHandler = { [weak self] proc in
+            let errorData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.activeTranscriptions.remove(sessionDir)
+                if proc.terminationStatus == 0 {
+                    self.lastTranscriptPath = sessionDir.appendingPathComponent("transcript.md")
+                } else {
+                    let message = String(data: errorData, encoding: .utf8) ?? "unknown error"
+                    self.lastError = "Transcription failed: \(message.suffix(200))"
+                }
+            }
+        }
+
+        do {
+            try process.run()
+        } catch {
+            activeTranscriptions.remove(sessionDir)
+            lastError = "Could not launch transcription: \(error.localizedDescription)"
         }
     }
 
@@ -80,17 +144,19 @@ final class MeetingCapture: NSObject, ObservableObject {
 
         let sessionDir = try makeSessionDir()
 
+        // AAC/m4a instead of float32 WAV: ~15-20x smaller on disk for
+        // near-identical speech quality, and AVAudioFile encodes it directly
+        // -- no separate encoder needed. Whisper (via ffmpeg) reads m4a fine.
         let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVSampleRateKey: 48_000,
             AVNumberOfChannelsKey: 1,
-            AVLinearPCMBitDepthKey: 32,
-            AVLinearPCMIsFloatKey: true,
+            AVEncoderBitRateKey: 64_000,
         ]
         let systemAudioFile = try AVAudioFile(
-            forWriting: sessionDir.appendingPathComponent("system.wav"), settings: settings)
+            forWriting: sessionDir.appendingPathComponent("system.m4a"), settings: settings)
         let micAudioFile = try AVAudioFile(
-            forWriting: sessionDir.appendingPathComponent("mic.wav"), settings: settings)
+            forWriting: sessionDir.appendingPathComponent("mic.m4a"), settings: settings)
 
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: systemQueue)
@@ -128,7 +194,11 @@ final class MeetingCapture: NSObject, ObservableObject {
 
     private func makeSessionDir() throws -> URL {
         let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        // Millisecond precision, not just seconds: back-to-back meetings can
+        // stop-then-start within the same second, and two sessions landing
+        // on the same folder name would silently truncate the first one's
+        // still-open audio files.
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss-SSS"
         let dir = Self.recordingsRoot.appendingPathComponent(
             formatter.string(from: Date()), isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
