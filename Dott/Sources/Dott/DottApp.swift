@@ -59,6 +59,8 @@ struct MenuContent: View {
             NSWorkspace.shared.open(MeetingCapture.recordingsRoot)
         }
         Divider()
+        Toggle("Auto-record Zoom calls", isOn: $capture.autoRecordZoom)
+        Divider()
         Button("Quit") {
             NSApplication.shared.terminate(nil)
         }

@@ -16,6 +16,12 @@ final class MeetingCapture: NSObject, ObservableObject {
     @Published var lastTranscriptPath: URL?
     @Published var lastError: String?
 
+    @Published var autoRecordZoom: Bool {
+        didSet { UserDefaults.standard.set(autoRecordZoom, forKey: "autoRecordZoom") }
+    }
+
+    private let zoomWatcher = ZoomWatcher()
+
     static let recordingsRoot: URL = {
         let dir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("MeetingRecordings", isDirectory: true)
@@ -43,6 +49,27 @@ final class MeetingCapture: NSObject, ObservableObject {
     // own AVAudioFile, so no locking is needed between them.
     private let systemQueue = DispatchQueue(label: "meeting.audio.system")
     private let micQueue = DispatchQueue(label: "meeting.audio.mic")
+
+    override init() {
+        // Default true: this is the feature that was actually asked for --
+        // forgetting to stop/restart between back-to-back Zoom calls was
+        // literally the motivating complaint.
+        if UserDefaults.standard.object(forKey: "autoRecordZoom") == nil {
+            UserDefaults.standard.set(true, forKey: "autoRecordZoom")
+        }
+        autoRecordZoom = UserDefaults.standard.bool(forKey: "autoRecordZoom")
+        super.init()
+
+        zoomWatcher.onCallStateChanged = { [weak self] inCall in
+            guard let self, self.autoRecordZoom else { return }
+            if inCall {
+                self.start()
+            } else {
+                self.stop()
+            }
+        }
+        zoomWatcher.start()
+    }
 
     func start() {
         guard !isRecording else { return }
