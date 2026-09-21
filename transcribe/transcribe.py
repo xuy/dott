@@ -14,12 +14,21 @@ Usage:
     transcribe.py <session_dir> [--model mlx-community/whisper-large-v3-turbo]
 """
 import argparse
+import json
+import re
 import subprocess
 import sys
 from pathlib import Path
 
-import mlx_whisper
-import numpy as np
+try:
+    import numpy as np
+except ImportError:  # Metadata helpers remain usable without transcription deps.
+    np = None
+
+try:
+    import mlx_whisper
+except ImportError:  # Metadata helpers remain usable without the model installed.
+    mlx_whisper = None
 
 DEFAULT_MODEL = "mlx-community/whisper-large-v3-turbo"
 
@@ -34,14 +43,28 @@ SILENCE_DBFS_THRESHOLD = -50.0
 ENERGY_SAMPLE_RATE = 16_000  # plenty for an RMS silence check, decodes fast
 
 
-def load_pcm(path: Path, sample_rate: int = ENERGY_SAMPLE_RATE) -> np.ndarray:
+def load_pcm(path: Path, sample_rate: int = ENERGY_SAMPLE_RATE) -> "np.ndarray":
     """Decode any audio file to mono float32 PCM via ffmpeg."""
+    if np is None:
+        sys.exit("numpy is required to transcribe audio")
     cmd = [
-        "ffmpeg", "-nostdin", "-v", "quiet", "-i", str(path),
+        "ffmpeg", "-nostdin", "-v", "error", "-i", str(path),
         "-f", "f32le", "-ac", "1", "-ar", str(sample_rate), "-",
     ]
-    out = subprocess.run(cmd, stdout=subprocess.PIPE, check=True).stdout
-    return np.frombuffer(out, dtype=np.float32)
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(f"ffmpeg timed out decoding {path}") from error
+    except subprocess.CalledProcessError as error:
+        detail = error.stderr.decode(errors="replace").strip()
+        raise RuntimeError(f"ffmpeg could not decode {path}: {detail}") from error
+    return np.frombuffer(result.stdout, dtype=np.float32)
 
 
 def segment_dbfs(samples: np.ndarray, sample_rate: int, start: float, end: float) -> float:
@@ -54,6 +77,8 @@ def segment_dbfs(samples: np.ndarray, sample_rate: int, start: float, end: float
 
 
 def transcribe_file(path: Path, model: str) -> list[dict]:
+    if mlx_whisper is None:
+        sys.exit("mlx-whisper is required to transcribe audio")
     print(f"Transcribing {path.name} with {model} ...", file=sys.stderr)
     result = mlx_whisper.transcribe(str(path), path_or_hf_repo=model)
     segments = result["segments"]
@@ -77,6 +102,24 @@ def find_track(session_dir: Path, stem: str) -> Path:
     if not matches:
         sys.exit(f"No {stem}.* file found in {session_dir}")
     return matches[0]
+
+
+def meeting_title(session_dir: Path) -> str:
+    fallback = session_dir.name
+    metadata_path = session_dir / "metadata.json"
+    try:
+        data = json.loads(metadata_path.read_text())
+        title = data.get("meeting_title") if isinstance(data, dict) else None
+        if not isinstance(title, str):
+            return fallback
+        title = re.sub(r"[\r\n\t]+", " ", title)
+        title = re.sub(r"\s+", " ", title).strip()
+        return title or fallback
+    except FileNotFoundError:
+        return fallback
+    except (OSError, json.JSONDecodeError) as error:
+        print(f"Warning: ignoring {metadata_path}: {error}", file=sys.stderr)
+        return fallback
 
 
 def format_timestamp(seconds: float) -> str:
@@ -108,7 +151,7 @@ def main() -> None:
 
     out_path = session_dir / "transcript.md"
     with out_path.open("w") as f:
-        f.write(f"# Transcript — {session_dir.name}\n\n")
+        f.write(f"# Transcript — {meeting_title(session_dir)}\n\n")
         for start, speaker, text in entries:
             f.write(f"**[{format_timestamp(start)}] {speaker}:** {text}\n\n")
 

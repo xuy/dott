@@ -44,6 +44,8 @@ final class MeetingCapture: NSObject, ObservableObject {
     private var micAudioFile: AVAudioFile?
     private var startDate: Date?
     private var timer: Timer?
+    private var captureGeneration = 0
+    private var isStarting = false
 
     // Separate serial queues per output type: each queue only ever touches its
     // own AVAudioFile, so no locking is needed between them.
@@ -60,10 +62,10 @@ final class MeetingCapture: NSObject, ObservableObject {
         autoRecordZoom = UserDefaults.standard.bool(forKey: "autoRecordZoom")
         super.init()
 
-        zoomWatcher.onCallStateChanged = { [weak self] inCall in
+        zoomWatcher.onCallStateChanged = { [weak self] callInfo in
             guard let self, self.autoRecordZoom else { return }
-            if inCall {
-                self.start()
+            if let callInfo {
+                self.start(zoomCall: callInfo)
             } else {
                 self.stop()
             }
@@ -72,13 +74,22 @@ final class MeetingCapture: NSObject, ObservableObject {
     }
 
     func start() {
-        guard !isRecording else { return }
+        start(zoomCall: nil)
+    }
+
+    private func start(zoomCall: ZoomCallInfo?) {
+        guard !isRecording, !isStarting else { return }
+        isStarting = true
+        captureGeneration += 1
+        let generation = captureGeneration
         lastError = nil
         Task {
             do {
-                try await startCapture()
+                try await startCapture(zoomCall: zoomCall, generation: generation)
             } catch {
                 await MainActor.run {
+                    guard self.captureGeneration == generation else { return }
+                    self.isStarting = false
                     self.lastError = "\(error.localizedDescription)"
                 }
             }
@@ -86,7 +97,10 @@ final class MeetingCapture: NSObject, ObservableObject {
     }
 
     func stop() {
-        guard isRecording, let stream else { return }
+        guard isRecording || isStarting else { return }
+        captureGeneration += 1
+        isStarting = false
+        guard let stream, let sessionDir = lastSessionDir else { return }
         Task {
             do {
                 try await stream.stopCapture()
@@ -94,11 +108,8 @@ final class MeetingCapture: NSObject, ObservableObject {
                 NSLog("Error stopping capture: \(error)")
             }
             await MainActor.run {
-                let sessionDir = self.lastSessionDir
                 self.finishRecording()
-                if let sessionDir {
-                    self.transcribe(sessionDir)
-                }
+                self.transcribe(sessionDir)
             }
         }
     }
@@ -116,6 +127,15 @@ final class MeetingCapture: NSObject, ObservableObject {
         process.arguments = [Self.transcribeScript.path, sessionDir.path]
         let stderrPipe = Pipe()
         process.standardError = stderrPipe
+        let stderrLock = NSLock()
+        var stderrData = Data()
+        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            stderrLock.lock()
+            stderrData.append(data)
+            stderrLock.unlock()
+        }
 
         // Apps launched from Finder/Spotlight/LaunchServices don't inherit
         // the shell's PATH, so `ffmpeg` (Homebrew, /opt/homebrew/bin) is
@@ -126,7 +146,10 @@ final class MeetingCapture: NSObject, ObservableObject {
         process.environment = environment
 
         process.terminationHandler = { [weak self] proc in
-            let errorData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
+            stderrLock.lock()
+            let errorData = stderrData
+            stderrLock.unlock()
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.activeTranscriptions.remove(sessionDir)
@@ -147,7 +170,7 @@ final class MeetingCapture: NSObject, ObservableObject {
         }
     }
 
-    private func startCapture() async throws {
+    private func startCapture(zoomCall: ZoomCallInfo?, generation: Int) async throws {
         let content = try await SCShareableContent.excludingDesktopWindows(
             false, onScreenWindowsOnly: true)
         guard let display = content.displays.first else {
@@ -169,7 +192,7 @@ final class MeetingCapture: NSObject, ObservableObject {
         config.showsCursor = false
         config.minimumFrameInterval = CMTime(value: 1, timescale: 1)
 
-        let sessionDir = try makeSessionDir()
+        let sessionDir = try makeSessionDir(title: zoomCall?.meetingTitle)
 
         // AAC/m4a instead of float32 WAV: ~15-20x smaller on disk for
         // near-identical speech quality, and AVAudioFile encodes it directly
@@ -191,12 +214,19 @@ final class MeetingCapture: NSObject, ObservableObject {
         try await stream.startCapture()
 
         await MainActor.run {
+            guard self.captureGeneration == generation, self.isStarting else {
+                Task { try? await stream.stopCapture() }
+                return
+            }
+            let startDate = Date()
             self.systemAudioFile = systemAudioFile
             self.micAudioFile = micAudioFile
             self.stream = stream
             self.lastSessionDir = sessionDir
-            self.startDate = Date()
+            self.startDate = startDate
+            self.isStarting = false
             self.isRecording = true
+            self.writeMetadata(for: sessionDir, zoomCall: zoomCall, startDate: startDate)
             self.startTimer()
         }
     }
@@ -205,6 +235,7 @@ final class MeetingCapture: NSObject, ObservableObject {
         stream = nil
         systemAudioFile = nil
         micAudioFile = nil
+        isStarting = false
         isRecording = false
         timer?.invalidate()
         timer = nil
@@ -219,17 +250,49 @@ final class MeetingCapture: NSObject, ObservableObject {
         }
     }
 
-    private func makeSessionDir() throws -> URL {
+    private func makeSessionDir(title: String?) throws -> URL {
         let formatter = DateFormatter()
         // Millisecond precision, not just seconds: back-to-back meetings can
         // stop-then-start within the same second, and two sessions landing
         // on the same folder name would silently truncate the first one's
         // still-open audio files.
         formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss-SSS"
-        let dir = Self.recordingsRoot.appendingPathComponent(
-            formatter.string(from: Date()), isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let timestamp = formatter.string(from: Date())
+        let slug = ZoomCallInfo.folderSlug(for: title)
+        let base = slug.map { "\(timestamp)_\($0)" } ?? timestamp
+        var dir = Self.recordingsRoot.appendingPathComponent(base, isDirectory: true)
+        var suffix = 0
+        while FileManager.default.fileExists(atPath: dir.path) {
+            suffix += 1
+            dir = Self.recordingsRoot.appendingPathComponent("\(base)-\(suffix)", isDirectory: true)
+        }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: false)
         return dir
+    }
+
+    private func writeMetadata(for sessionDir: URL, zoomCall: ZoomCallInfo?, startDate: Date) {
+        let formatter = ISO8601DateFormatter()
+        let metadata: [String: Any] = [
+            "schema": 1,
+            "session_id": sessionDir.lastPathComponent,
+            "started_at": formatter.string(from: startDate),
+            "source": zoomCall == nil ? "manual" : "zoom",
+            "meeting_title": zoomCall?.meetingTitle as Any,
+        ]
+        guard JSONSerialization.isValidJSONObject(metadata) else { return }
+        do {
+            let data = try JSONSerialization.data(withJSONObject: metadata, options: [.prettyPrinted])
+            let temp = sessionDir.appendingPathComponent("metadata.json.tmp")
+            let destination = sessionDir.appendingPathComponent("metadata.json")
+            try data.write(to: temp, options: .atomic)
+            if FileManager.default.fileExists(atPath: destination.path) {
+                _ = try FileManager.default.replaceItemAt(destination, withItemAt: temp)
+            } else {
+                try FileManager.default.moveItem(at: temp, to: destination)
+            }
+        } catch {
+            NSLog("Could not write recording metadata: \(error)")
+        }
     }
 
     private enum CaptureError: LocalizedError {

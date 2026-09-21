@@ -19,7 +19,7 @@ Two independent pieces:
   in the background the moment a recording stops — no manual step needed
   in normal use.
 
-Recordings land in `~/MeetingRecordings/<timestamp>/{mic.m4a,system.m4a,transcript.md}`.
+Recordings land in `~/MeetingRecordings/<timestamp>[_<meeting-title>]/{mic.m4a,system.m4a,metadata.json,transcript.md}`. Zoom titles are sanitized for the optional folder suffix; the readable title is stored in `metadata.json` and used for the transcript heading. Manual recordings and generic `Zoom Meeting` windows remain timestamp-only.
 
 ## Features
 
@@ -34,12 +34,14 @@ Recordings land in `~/MeetingRecordings/<timestamp>/{mic.m4a,system.m4a,transcri
   idle/lobby window, `"Zoom Workplace"`, stays onscreen always, so it's not
   a usable signal by itself). Auto-starts/stops recording on that signal's
   edges. Toggle via the menu ("Auto-record Zoom calls", on by default).
-  This is what makes back-to-back meetings safe by default: leaving one
-  call and joining the next produces two separate sessions instead of one
+  The title is captured on the call's start edge; Zoom may expose only the
+  generic `Zoom Meeting` title, in which case Dott keeps the timestamp-only
+  fallback. This is what makes back-to-back meetings safe by default: leaving
+  one call and joining the next produces two separate sessions instead of one
   recording bleeding into the next.
-- **Back-to-back safety**: session folders are named to millisecond
-  precision (not just seconds) so two rapid sessions can never collide on
-  the same folder, and transcription tracks *which* sessions are in flight
+- **Back-to-back safety**: session folders retain a millisecond timestamp
+  (not just seconds) so two rapid sessions can never collide on the same
+  folder, even when their meeting titles are identical, and transcription tracks *which* sessions are in flight
   rather than a single global flag.
 - **Silence-hallucination filtering**: Whisper confidently hallucinates
   short phrases ("Thank you.") on near-silent audio (common on the
