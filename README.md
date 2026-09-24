@@ -19,15 +19,24 @@ Two independent pieces:
   in the background the moment a recording stops — no manual step needed
   in normal use.
 
-Recordings land in `~/MeetingRecordings/<timestamp>[_<meeting-title>]/{mic.m4a,system.m4a,metadata.json,transcript.md}`. Zoom titles are sanitized for the optional folder suffix; the readable title is stored in `metadata.json` and used for the transcript heading. Manual recordings and generic `Zoom Meeting` windows remain timestamp-only.
+Recordings land in `~/MeetingRecordings/<timestamp>[_<meeting-title>]/{mic.m4a,system.m4a,metadata.json,transcript.md}`. Calendar-enriched historical folders can be renamed to `<timestamp>_<calendar-title>` by the reviewable migration tool described below. Calendar metadata stores the matched event and display-name attendees; no transcript summary or inferred participant data is generated. Manual recordings and generic `Zoom Meeting` windows remain timestamp-only when there is no match.
 
 ## Features
 
 - **Auto-transcription**: fires automatically when a recording stops.
-  Recording and transcribing are independent states — starting a new
-  recording never waits on a previous one still transcribing in the
-  background (verified: `activeTranscriptions` is a `Set<URL>`, and
-  `start()`/`stop()` never check it).
+- **Optional speaker identification**: enrolled 1:1 voices can be matched in
+  group-call system audio. To build local voice profiles from eligible past
+  recordings, run `transcribe/.venv/bin/python transcribe/enroll_speakers.py
+  ~/MeetingRecordings`. Profiles are stored under `transcribe/speaker_profiles/`
+  and excluded from git because they contain biometric voice-derived data.
+  When multiple voices are detected, transcription applies known names where
+  similarity is high and uses `Speaker N` for unmatched voices. The first use
+  downloads SpeechBrain's ECAPA model; later identification runs locally. The
+  usual mic/system labeling remains unchanged when only one system speaker is
+  detected.
+- **Independent recording/transcription states**: starting a new recording
+  never waits on a previous one still transcribing in the background;
+  `activeTranscriptions` tracks sessions independently.
 - **Auto-record Zoom calls**: `ZoomWatcher` polls the window list for a
   window whose name ends in `"Zoom Meeting"` with `onscreen == true` —
   confirmed empirically to exist only while a call is actually live (Zoom's
@@ -84,6 +93,26 @@ and let it happen automatically. Files show up under
 `~/MeetingRecordings/`. To rebuild after editing source, re-run
 `./build_app.sh` and re-copy to `/Applications/`.
 
+## Historical Calendar migration
+
+Historical folders can be matched to Google Calendar events with a deliberately reviewable, one-shot workflow. Export the relevant events as a JSON array with `id`, `summary`, `start`, `end`, and optional display-name `attendees`, then run a dry run:
+
+```bash
+cd transcribe
+python3 migrate_calendar.py --events calendar-events.json \\
+  --root ~/MeetingRecordings --report calendar-migration-report.json
+```
+
+Review the proposed matches, scores, alternatives, and transcript participant evidence. Only accepted, non-ambiguous matches are applied, and applying requires explicitly naming the reviewed report:
+
+```bash
+python3 migrate_calendar.py --events calendar-events.json \\
+  --root ~/MeetingRecordings --report calendar-migration-report.json \\
+  --apply --approve calendar-migration-report.json
+```
+
+The apply step atomically writes `metadata.json` with the Calendar event and structured attendees, preserves the original folder name for auditability, and renames the folder with its timestamp prefix plus a safe Calendar title. Unmatched or ambiguous folders are left untouched; rerunning is safe. The migration does not derive summaries or participant identities.
+
 ## Transcribing manually
 
 Normally you don't need this — Dott runs it automatically on stop. To
@@ -106,8 +135,10 @@ Hugging Face — after that it's fully offline. Requires `ffmpeg`
 - Requires macOS 15+ (uses `SCStreamConfiguration.captureMicrophone`).
 - No live transcription — record now, transcribe after (automatically, but
   not in real time).
-- Speaker labels are just "Me" (mic) vs "Them" (system audio) — good enough
-  for 1:1 or small calls, doesn't distinguish multiple other participants.
+- Speaker diarization is a lightweight sliding-window approximation using
+  8-second windows and 4-second steps. It can mislabel short turns, overlapping
+  speech, or speakers without enrolled profiles; unmatched group-call voices
+  are labeled `Speaker N`. Treat speaker names as tentative until verified.
 - Zoom auto-record is a window-title heuristic, not an official API — a
   Zoom client update could change its window titling and silently break
   it. Google Meet/Teams aren't wired up (same technique would apply, just

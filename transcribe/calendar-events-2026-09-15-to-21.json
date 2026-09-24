@@ -1,0 +1,19 @@
+[
+  {"id":"288n3cn88agsjfbgak52ntpsg6","summary":"Eric / Haichun","start":"2026-09-15T11:00:00-07:00","end":"2026-09-15T11:30:00-07:00","attendees":[{"display_name":"Eric Xu"},{"display_name":"Haichun Chen"}]},
+  {"id":"7kciak75de52espnd5g0ca42s4_20260915T190000Z","summary":"Eng Managers [Monthly]","start":"2026-09-15T12:00:00-07:00","end":"2026-09-15T12:45:00-07:00","attendees":[]},
+  {"id":"44vdpnrs6r9hn5jhd52uqcv1m9","summary":"Manoj & Eric: 1:1","start":"2026-09-15T14:00:00-07:00","end":"2026-09-15T14:30:00-07:00","attendees":[{"display_name":"Eric Xu"},{"display_name":"Manoj Sivakumar"}]},
+  {"id":"5fo7ndaep1fb4ka2pu6pmof7t9","summary":"Eric | Tamir","start":"2026-09-17T11:00:00-07:00","end":"2026-09-17T11:30:00-07:00","attendees":[{"display_name":"Eric Xu"},{"display_name":"Tamia Hurst"}]},
+  {"id":"415fe04bdck3j7kbi02ac69np7","summary":"Eric | Eugene","start":"2026-09-17T11:30:00-07:00","end":"2026-09-17T12:00:00-07:00","attendees":[{"display_name":"Eric Xu"},{"display_name":"Eugene Braude"}]},
+  {"id":"1gt7e04kt39aps481t6qcjdj1g_20260917T170000Z","summary":"Finance update","start":"2026-09-17T12:00:00-07:00","end":"2026-09-17T12:45:00-07:00","attendees":[]},
+  {"id":"35im9ufuvcspe3e41rbcjvjtua","summary":"Manoj & Eric- 1:1","start":"2026-09-17T14:00:00-07:00","end":"2026-09-17T14:30:00-07:00","attendees":[{"display_name":"Eric Xu"},{"display_name":"Manoj Sivakumar"}]},
+  {"id":"41qatf2hsgcdujcmgv8o3ul8mi","summary":"Eric | Nicolas Meet and Greet","start":"2026-09-17T14:30:00-07:00","end":"2026-09-17T14:55:00-07:00","attendees":[{"display_name":"Eric Xu"},{"display_name":"Nicolas Franchet"}]},
+  {"id":"0m956p8ndo7fpjkns62khspql0","summary":"Eric / Abby","start":"2026-09-18T07:30:00-07:00","end":"2026-09-18T08:15:00-07:00","attendees":[{"display_name":"Eric Xu"},{"display_name":"Abby Douglas"}]},
+  {"id":"73bdn25og15rehrncvqp4vk3j1","summary":"Eric / Tommy - Quick Intro","start":"2026-09-18T11:00:00-07:00","end":"2026-09-18T11:30:00-07:00","attendees":[{"display_name":"Eric Xu"},{"display_name":"Tommy Scalf"}]},
+  {"id":"3g4q5krugmial3aj7p0n9vmo1o_20260918T183000Z","summary":"Project Star Wars {Weekly}","start":"2026-09-18T11:30:00-07:00","end":"2026-09-18T12:00:00-07:00","attendees":[]},
+  {"id":"0hupn1c6nqqsgeqhtseum636bs","summary":"Eric / Austin","start":"2026-09-18T13:30:00-07:00","end":"2026-09-18T13:55:00-07:00","attendees":[{"display_name":"Eric Xu"},{"display_name":"Austin"}]},
+  {"id":"6pv57al846m50vmbq6th8l3lt1","summary":"Eric / Austin Part 2","start":"2026-09-21T11:00:00-07:00","end":"2026-09-21T11:25:00-07:00","attendees":[{"display_name":"Eric Xu"},{"display_name":"Austin"}]},
+  {"id":"15hcc3vm7905huma05lr07a4n3","summary":"Eric / KC intro","start":"2026-09-21T10:00:00-07:00","end":"2026-09-21T10:30:00-07:00","attendees":[{"display_name":"Eric Xu"},{"display_name":"KC Puppo"}]},
+  {"id":"4ml8s6vut4c1ot4tkb0dlce6j6","summary":"Eric | Trevor Meet and Greet","start":"2026-09-21T13:30:00-07:00","end":"2026-09-21T13:55:00-07:00","attendees":[{"display_name":"Eric Xu"},{"display_name":"Trevor Yager"}]},
+  {"id":"01v1ke3han2tdn9imr2otg1gpc_20260921T200000Z","summary":"Eng LT Meeting","start":"2026-09-21T13:00:00-07:00","end":"2026-09-21T14:00:00-07:00","attendees":[]},
+  {"id":"6ltv0k9290nq83fkjt9s19m7jq_20260921T220000Z","summary":"muse about data","start":"2026-09-21T15:00:00-07:00","end":"2026-09-21T15:30:00-07:00","attendees":[{"display_name":"Eric Xu"},{"display_name":"Nicolas Franchet"},{"display_name":"Haichun Chen"}]}
+]

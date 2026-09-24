@@ -4,6 +4,7 @@ import CoreMedia
 import Foundation
 import ScreenCaptureKit
 
+@MainActor
 final class MeetingCapture: NSObject, ObservableObject {
     @Published var isRecording = false
     // A set, not a single Bool: back-to-back meetings can leave more than one
@@ -15,12 +16,23 @@ final class MeetingCapture: NSObject, ObservableObject {
     @Published var lastSessionDir: URL?
     @Published var lastTranscriptPath: URL?
     @Published var lastError: String?
+    @Published var calendarConnected = false
+    @Published var calendarConnecting = false
+    @Published var calendarError: String?
+    @Published var autoEnrichCalendar: Bool {
+        didSet { UserDefaults.standard.set(autoEnrichCalendar, forKey: "autoEnrichCalendar") }
+    }
 
     @Published var autoRecordZoom: Bool {
         didSet { UserDefaults.standard.set(autoRecordZoom, forKey: "autoRecordZoom") }
     }
 
     private let zoomWatcher = ZoomWatcher()
+    private var calendarOAuth: GoogleOAuth?
+    private var calendarClient: GoogleCalendarClient?
+    private var calendarObserver: NSObjectProtocol?
+
+    static let setupGuideURL = repoRoot.appendingPathComponent("Dott/GoogleCalendarSetup.md")
 
     static let recordingsRoot: URL = {
         let dir = FileManager.default.homeDirectoryForCurrentUser
@@ -38,6 +50,17 @@ final class MeetingCapture: NSObject, ObservableObject {
         .appendingPathComponent("transcribe/.venv/bin/python3")
     private static let transcribeScript = repoRoot
         .appendingPathComponent("transcribe/transcribe.py")
+
+    private static func existingPath(_ path: URL) -> URL? {
+        FileManager.default.fileExists(atPath: path.path) ? path : nil
+    }
+
+    private static var calendarConfigURL: URL {
+        let repoConfig = repoRoot.appendingPathComponent("Dott/google-oauth-client.json")
+        if let repoConfig = existingPath(repoConfig) { return repoConfig }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/Dott/google-oauth-client.json")
+    }
 
     private var stream: SCStream?
     private var systemAudioFile: AVAudioFile?
@@ -60,7 +83,12 @@ final class MeetingCapture: NSObject, ObservableObject {
             UserDefaults.standard.set(true, forKey: "autoRecordZoom")
         }
         autoRecordZoom = UserDefaults.standard.bool(forKey: "autoRecordZoom")
+        if UserDefaults.standard.object(forKey: "autoEnrichCalendar") == nil {
+            UserDefaults.standard.set(true, forKey: "autoEnrichCalendar")
+        }
+        autoEnrichCalendar = UserDefaults.standard.bool(forKey: "autoEnrichCalendar")
         super.init()
+        setupCalendarOAuth()
 
         zoomWatcher.onCallStateChanged = { [weak self] callInfo in
             guard let self, self.autoRecordZoom else { return }
@@ -71,6 +99,34 @@ final class MeetingCapture: NSObject, ObservableObject {
             }
         }
         zoomWatcher.start()
+    }
+
+    func connectCalendar() {
+        calendarOAuth?.connect()
+    }
+
+    func disconnectCalendar() {
+        calendarOAuth?.disconnect()
+        calendarConnected = false
+        calendarError = nil
+    }
+
+    private func setupCalendarOAuth() {
+        let configURL = Self.calendarConfigURL
+        guard let data = try? Data(contentsOf: configURL),
+            let config = try? JSONDecoder().decode(GoogleOAuthConfiguration.self, from: data)
+        else { return }
+        let oauth = GoogleOAuth(configuration: config)
+        calendarOAuth = oauth
+        calendarClient = GoogleCalendarClient(configuration: config)
+        calendarConnected = oauth.isConnected
+        calendarObserver = NotificationCenter.default.addObserver(
+            forName: GoogleOAuth.changedNotification, object: nil, queue: .main
+        ) { [weak self, weak oauth] _ in
+            self?.calendarConnected = oauth?.isConnected ?? false
+            self?.calendarConnecting = oauth?.isConnecting ?? false
+            self?.calendarError = oauth?.errorMessage
+        }
     }
 
     func start() {
@@ -107,10 +163,16 @@ final class MeetingCapture: NSObject, ObservableObject {
             } catch {
                 NSLog("Error stopping capture: \(error)")
             }
+            let endedAt = Date()
+            let recordedStart = self.startDate ?? endedAt
             await MainActor.run {
                 self.finishRecording()
-                self.transcribe(sessionDir)
+                self.updateMetadataEnd(for: sessionDir, endedAt: endedAt)
             }
+            if self.autoEnrichCalendar {
+                await self.enrichCalendarMetadata(for: sessionDir, start: recordedStart, end: endedAt)
+            }
+            await MainActor.run { self.transcribe(sessionDir) }
         }
     }
 
@@ -270,20 +332,69 @@ final class MeetingCapture: NSObject, ObservableObject {
         return dir
     }
 
+    private func enrichCalendarMetadata(for sessionDir: URL, start: Date, end: Date) async {
+        guard let calendarClient else { return }
+        do {
+                let events = try await calendarClient.events(
+                    from: start.addingTimeInterval(-15 * 60),
+                    to: end.addingTimeInterval(15 * 60)
+                )
+                let metadataURL = sessionDir.appendingPathComponent("metadata.json")
+                guard var metadata = (try? Data(contentsOf: metadataURL)).flatMap({ try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }) else { return }
+                let zoomTitle = metadata["meeting_title"] as? String
+                switch CalendarMatcher.match(events: events, recordingStart: start, recordingEnd: end, zoomTitle: zoomTitle) {
+                case .matched(let event, let confidence):
+                    metadata["calendar"] = [
+                        "status": "matched",
+                        "provider": "google",
+                        "calendar_id": event.calendarID,
+                        "event_id": event.id,
+                        "summary": event.summary,
+                        "start": ISO8601DateFormatter().string(from: event.start),
+                        "end": ISO8601DateFormatter().string(from: event.end),
+                        "attendees": event.attendees.map { ["display_name": $0.displayName] },
+                        "confidence": confidence,
+                    ]
+                    if zoomTitle == nil || zoomTitle == "" {
+                        metadata["meeting_title"] = event.summary
+                    }
+                case .ambiguous:
+                    metadata["calendar"] = ["status": "ambiguous", "provider": "google"]
+                case .noMatch:
+                    metadata["calendar"] = ["status": "no_match", "provider": "google"]
+                }
+                self.writeMetadataObject(metadata, to: metadataURL)
+            } catch {
+                self.calendarError = error.localizedDescription
+                NSLog("Calendar enrichment unavailable: \(error.localizedDescription)")
+            }
+    }
+
+    private func updateMetadataEnd(for sessionDir: URL, endedAt: Date) {
+        let metadataURL = sessionDir.appendingPathComponent("metadata.json")
+        guard var metadata = (try? Data(contentsOf: metadataURL)).flatMap({ try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }) else { return }
+        metadata["ended_at"] = ISO8601DateFormatter().string(from: endedAt)
+        writeMetadataObject(metadata, to: metadataURL)
+    }
+
     private func writeMetadata(for sessionDir: URL, zoomCall: ZoomCallInfo?, startDate: Date) {
         let formatter = ISO8601DateFormatter()
         let metadata: [String: Any] = [
-            "schema": 1,
+            "schema": 2,
             "session_id": sessionDir.lastPathComponent,
             "started_at": formatter.string(from: startDate),
             "source": zoomCall == nil ? "manual" : "zoom",
-            "meeting_title": zoomCall?.meetingTitle as Any,
+            "meeting_title": zoomCall?.meetingTitle ?? NSNull(),
         ]
         guard JSONSerialization.isValidJSONObject(metadata) else { return }
+        let destination = sessionDir.appendingPathComponent("metadata.json")
+        writeMetadataObject(metadata, to: destination)
+    }
+
+    private func writeMetadataObject(_ metadata: [String: Any], to destination: URL) {
         do {
             let data = try JSONSerialization.data(withJSONObject: metadata, options: [.prettyPrinted])
-            let temp = sessionDir.appendingPathComponent("metadata.json.tmp")
-            let destination = sessionDir.appendingPathComponent("metadata.json")
+            let temp = destination.appendingPathExtension("tmp")
             try data.write(to: temp, options: .atomic)
             if FileManager.default.fileExists(atPath: destination.path) {
                 _ = try FileManager.default.replaceItemAt(destination, withItemAt: temp)

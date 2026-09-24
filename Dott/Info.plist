@@ -20,6 +20,10 @@
 	<string>15.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Dott reads your calendar to label recorded meetings and participants locally.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Dott reads your calendar to label recorded meetings and participants locally.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Dott captures your microphone to transcribe meetings offline.</string>
 	<key>NSScreenCaptureUsageDescription</key>

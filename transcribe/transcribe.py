@@ -122,6 +122,92 @@ def meeting_title(session_dir: Path) -> str:
         return fallback
 
 
+LOCAL_ATTENDEE_NAME = "Eric Xu"
+
+
+def is_confident_1on1(metadata: dict) -> str | None:
+    """Return the sole remote attendee for a matched 1:1, if known."""
+    if not isinstance(metadata, dict):
+        return None
+    calendar = metadata.get("calendar")
+    if not isinstance(calendar, dict) or calendar.get("status") != "matched":
+        return None
+    attendees = calendar.get("attendees", [])
+    if not isinstance(attendees, list):
+        return None
+    names = [
+        re.sub(r"\s+", " ", item.get("display_name", "")).strip()
+        for item in attendees
+        if isinstance(item, dict) and isinstance(item.get("display_name"), str)
+    ]
+    names = [name for name in names if name and name.casefold() != LOCAL_ATTENDEE_NAME.casefold()]
+    return names[0] if len(names) == 1 else None
+
+
+def speaker_labels(session_dir: Path) -> tuple[str, str]:
+    metadata_path = session_dir / "metadata.json"
+    try:
+        data = json.loads(metadata_path.read_text())
+        remote_name = is_confident_1on1(data)
+        if remote_name:
+            return "Me", remote_name
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        pass
+    return "Me", "Them"
+
+
+def label_system_segments(segments: list[dict], system_path: Path, remote_label: str) -> list[tuple[dict, str]]:
+    """Diarize the system track and label each Whisper segment by voice."""
+    try:
+        from speaker_embed import diarize, match_speaker
+        spans = diarize(system_path)
+    except Exception as error:
+        print(f"Warning: speaker diarization unavailable; using {remote_label}: {error}", file=sys.stderr)
+        return [(segment, remote_label) for segment in segments]
+    clusters = {span["cluster"] for span in spans}
+    if len(clusters) <= 1:
+        return [(segment, remote_label) for segment in segments]
+
+    profiles_dir = Path(__file__).resolve().parent / "speaker_profiles"
+    cluster_vectors = {}
+    for cluster in clusters:
+        vectors = [span["vector"] for span in spans if span["cluster"] == cluster]
+        if vectors:
+            try:
+                import numpy as np
+                vector = np.mean(np.stack(vectors), axis=0)
+                name, _score = match_speaker(vector, profiles_dir)
+            except Exception:
+                name = None
+        else:
+            name = None
+        cluster_vectors[cluster] = name
+
+    ordered_clusters = []
+    for span in sorted(spans, key=lambda item: item["start"]):
+        if span["cluster"] not in ordered_clusters:
+            ordered_clusters.append(span["cluster"])
+    cluster_labels = {}
+    next_unknown = 1
+    for cluster in ordered_clusters:
+        name = cluster_vectors.get(cluster)
+        if name:
+            cluster_labels[cluster] = name
+        else:
+            cluster_labels[cluster] = f"Speaker {next_unknown}"
+            next_unknown += 1
+
+    labeled = []
+    for segment in segments:
+        midpoint = (segment["start"] + segment["end"]) / 2
+        span = next((item for item in spans if item["start"] <= midpoint < item["end"]), None)
+        if span is None and spans:
+            span = min(spans, key=lambda item: min(abs(midpoint - item["start"]), abs(midpoint - item["end"])))
+        label = cluster_labels.get(span["cluster"], remote_label) if span else remote_label
+        labeled.append((segment, label))
+    return labeled
+
+
 def format_timestamp(seconds: float) -> str:
     minutes, secs = divmod(int(seconds), 60)
     hours, minutes = divmod(minutes, 60)
@@ -140,12 +226,18 @@ def main() -> None:
     mic_path = find_track(session_dir, "mic")
     system_path = find_track(session_dir, "system")
 
+    me_label, remote_label = speaker_labels(session_dir)
     entries = []
-    for path, speaker in [(mic_path, "Me"), (system_path, "Them")]:
-        for segment in transcribe_file(path, args.model):
-            text = segment["text"].strip()
-            if text:
-                entries.append((segment["start"], speaker, text))
+    for segment in transcribe_file(mic_path, args.model):
+        text = segment["text"].strip()
+        if text:
+            entries.append((segment["start"], me_label, text))
+
+    system_segments = transcribe_file(system_path, args.model)
+    for segment, speaker in label_system_segments(system_segments, system_path, remote_label):
+        text = segment["text"].strip()
+        if text:
+            entries.append((segment["start"], speaker, text))
 
     entries.sort(key=lambda e: e[0])
 
