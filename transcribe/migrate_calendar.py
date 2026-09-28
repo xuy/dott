@@ -86,6 +86,16 @@ def score(folder_start: datetime, duration: float, event: dict, transcript: str 
 
 
 def rank(folder: Path, events: list[dict]) -> dict:
+    metadata_path = folder / "metadata.json"
+    try:
+        existing = json.loads(metadata_path.read_text())
+        if isinstance(existing, dict) and (
+            isinstance(existing.get("migration"), dict)
+            or (isinstance(existing.get("calendar"), dict) and existing["calendar"].get("status") == "matched")
+        ):
+            return {"folder": folder.name, "status": "already_migrated"}
+    except (OSError, json.JSONDecodeError):
+        pass
     started = parse_stamp(folder.name)
     if started is None:
         return {"folder": folder.name, "status": "unparseable"}

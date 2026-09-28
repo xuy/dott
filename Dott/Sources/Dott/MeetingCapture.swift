@@ -169,10 +169,17 @@ final class MeetingCapture: NSObject, ObservableObject {
                 self.finishRecording()
                 self.updateMetadataEnd(for: sessionDir, endedAt: endedAt)
             }
+            let finalSessionDir: URL
             if self.autoEnrichCalendar {
-                await self.enrichCalendarMetadata(for: sessionDir, start: recordedStart, end: endedAt)
+                finalSessionDir = await self.enrichCalendarMetadata(
+                    for: sessionDir, start: recordedStart, end: endedAt) ?? sessionDir
+            } else {
+                finalSessionDir = sessionDir
             }
-            await MainActor.run { self.transcribe(sessionDir) }
+            await MainActor.run {
+                self.lastSessionDir = finalSessionDir
+                self.transcribe(finalSessionDir)
+            }
         }
     }
 
@@ -332,15 +339,15 @@ final class MeetingCapture: NSObject, ObservableObject {
         return dir
     }
 
-    private func enrichCalendarMetadata(for sessionDir: URL, start: Date, end: Date) async {
-        guard let calendarClient else { return }
+    private func enrichCalendarMetadata(for sessionDir: URL, start: Date, end: Date) async -> URL? {
+        guard let calendarClient else { return sessionDir }
         do {
                 let events = try await calendarClient.events(
                     from: start.addingTimeInterval(-15 * 60),
                     to: end.addingTimeInterval(15 * 60)
                 )
                 let metadataURL = sessionDir.appendingPathComponent("metadata.json")
-                guard var metadata = (try? Data(contentsOf: metadataURL)).flatMap({ try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }) else { return }
+                guard var metadata = (try? Data(contentsOf: metadataURL)).flatMap({ try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }) else { return sessionDir }
                 let zoomTitle = metadata["meeting_title"] as? String
                 switch CalendarMatcher.match(events: events, recordingStart: start, recordingEnd: end, zoomTitle: zoomTitle) {
                 case .matched(let event, let confidence):
@@ -364,10 +371,38 @@ final class MeetingCapture: NSObject, ObservableObject {
                     metadata["calendar"] = ["status": "no_match", "provider": "google"]
                 }
                 self.writeMetadataObject(metadata, to: metadataURL)
+                guard case .matched(let event, _) = CalendarMatcher.match(
+                    events: events, recordingStart: start, recordingEnd: end, zoomTitle: zoomTitle),
+                    !event.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                else { return sessionDir }
+                guard let renamed = self.renameSessionDirectory(sessionDir, title: event.summary) else {
+                    return sessionDir
+                }
+                return renamed
             } catch {
                 self.calendarError = error.localizedDescription
                 NSLog("Calendar enrichment unavailable: \(error.localizedDescription)")
+                return sessionDir
             }
+    }
+
+    private func renameSessionDirectory(_ sessionDir: URL, title: String) -> URL? {
+        guard sessionDir.deletingLastPathComponent() == Self.recordingsRoot else { return nil }
+        guard let slug = ZoomCallInfo.folderSlug(for: title) else { return nil }
+        let base = "\(sessionDir.lastPathComponent)_\(slug)"
+        var destination = Self.recordingsRoot.appendingPathComponent(base, isDirectory: true)
+        var suffix = 2
+        while FileManager.default.fileExists(atPath: destination.path) {
+            destination = Self.recordingsRoot.appendingPathComponent("\(base)-\(suffix)", isDirectory: true)
+            suffix += 1
+        }
+        do {
+            try FileManager.default.moveItem(at: sessionDir, to: destination)
+            return destination
+        } catch {
+            NSLog("Could not rename recording folder: \(error)")
+            return nil
+        }
     }
 
     private func updateMetadataEnd(for sessionDir: URL, endedAt: Date) {
