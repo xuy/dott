@@ -19,7 +19,7 @@ Two independent pieces:
   in the background the moment a recording stops — no manual step needed
   in normal use.
 
-Recordings land in `~/MeetingRecordings/<timestamp>[_<meeting-title>]/{mic.m4a,system.m4a,metadata.json,transcript.md}`. Calendar-enriched historical folders can be renamed to `<timestamp>_<calendar-title>` by the reviewable migration tool described below. Calendar metadata stores the matched event and display-name attendees; no transcript summary or inferred participant data is generated. Manual recordings and generic `Zoom Meeting` windows remain timestamp-only when there is no match.
+Recordings land in `~/MeetingRecordings/<timestamp>[_<meeting-title>]/{mic.m4a,system.m4a,metadata.json,transcript.md}`. Calendar-enriched historical folders can be renamed to `<timestamp>_<calendar-title>` by the reviewable migration tool described below. When a recording stops, Dott matches it against events in the local macOS Calendar (via EventKit, so any account synced into Calendar.app, e.g. a work Google calendar, works with no OAuth). On first launch macOS asks for Calendar access; allow it. Calendar metadata stores the matched event and display-name attendees; no transcript summary or inferred participant data is generated. Manual recordings and generic `Zoom Meeting` windows remain timestamp-only when there is no match.
 
 ## Features
 

@@ -60,25 +60,12 @@ struct MenuContent: View {
         }
         Divider()
         Toggle("Auto-record Zoom calls", isOn: $capture.autoRecordZoom)
-        Toggle("Enrich recordings from Google Calendar", isOn: $capture.autoEnrichCalendar)
-        if capture.calendarConnected {
-            Button("Disconnect Google Calendar") {
-                capture.disconnectCalendar()
-            }
-        } else {
-            Button("Connect Google Calendar") {
-                capture.connectCalendar()
-            }
-        }
+        Toggle("Name recordings from Calendar", isOn: $capture.autoEnrichCalendar)
         if let calendarError = capture.calendarError {
             Text(calendarError)
                 .foregroundStyle(.red)
         }
         Divider()
-        Button("Open Calendar Setup") {
-            let setup = MeetingCapture.setupGuideURL
-            NSWorkspace.shared.open(setup)
-        }
         Button("Quit") {
             NSApplication.shared.terminate(nil)
         }

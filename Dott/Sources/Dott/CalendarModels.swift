@@ -1,37 +1,5 @@
 import Foundation
 
-struct GoogleOAuthConfiguration: Codable {
-    struct Installed: Codable {
-        let clientID: String
-        let clientSecret: String
-        let authURI: String
-        let tokenURI: String
-        let redirectURIs: [String]
-
-        enum CodingKeys: String, CodingKey {
-            case clientID = "client_id"
-            case clientSecret = "client_secret"
-            case authURI = "auth_uri"
-            case tokenURI = "token_uri"
-            case redirectURIs = "redirect_uris"
-        }
-    }
-
-    let installed: Installed
-}
-
-struct GoogleToken: Codable {
-    let accessToken: String
-    let refreshToken: String?
-    let expiresAt: Date
-
-    enum CodingKeys: String, CodingKey {
-        case accessToken = "access_token"
-        case refreshToken = "refresh_token"
-        case expiresAt = "expires_at"
-    }
-}
-
 struct CalendarAttendee: Codable, Equatable {
     let displayName: String
 }

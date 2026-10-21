@@ -16,11 +16,12 @@ final class MeetingCapture: NSObject, ObservableObject {
     @Published var lastSessionDir: URL?
     @Published var lastTranscriptPath: URL?
     @Published var lastError: String?
-    @Published var calendarConnected = false
-    @Published var calendarConnecting = false
     @Published var calendarError: String?
     @Published var autoEnrichCalendar: Bool {
-        didSet { UserDefaults.standard.set(autoEnrichCalendar, forKey: "autoEnrichCalendar") }
+        didSet {
+            UserDefaults.standard.set(autoEnrichCalendar, forKey: "autoEnrichCalendar")
+            if autoEnrichCalendar, !oldValue { requestCalendarAccess() }
+        }
     }
 
     @Published var autoRecordZoom: Bool {
@@ -28,11 +29,7 @@ final class MeetingCapture: NSObject, ObservableObject {
     }
 
     private let zoomWatcher = ZoomWatcher()
-    private var calendarOAuth: GoogleOAuth?
-    private var calendarClient: GoogleCalendarClient?
-    private var calendarObserver: NSObjectProtocol?
-
-    static let setupGuideURL = repoRoot.appendingPathComponent("Dott/GoogleCalendarSetup.md")
+    private let calendarClient = LocalCalendarClient()
 
     static let recordingsRoot: URL = {
         let dir = FileManager.default.homeDirectoryForCurrentUser
@@ -50,17 +47,6 @@ final class MeetingCapture: NSObject, ObservableObject {
         .appendingPathComponent("transcribe/.venv/bin/python3")
     private static let transcribeScript = repoRoot
         .appendingPathComponent("transcribe/transcribe.py")
-
-    private static func existingPath(_ path: URL) -> URL? {
-        FileManager.default.fileExists(atPath: path.path) ? path : nil
-    }
-
-    private static var calendarConfigURL: URL {
-        let repoConfig = repoRoot.appendingPathComponent("Dott/google-oauth-client.json")
-        if let repoConfig = existingPath(repoConfig) { return repoConfig }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/Dott/google-oauth-client.json")
-    }
 
     private var stream: SCStream?
     private var systemAudioFile: AVAudioFile?
@@ -88,7 +74,7 @@ final class MeetingCapture: NSObject, ObservableObject {
         }
         autoEnrichCalendar = UserDefaults.standard.bool(forKey: "autoEnrichCalendar")
         super.init()
-        setupCalendarOAuth()
+        if autoEnrichCalendar { requestCalendarAccess() }
 
         zoomWatcher.onCallStateChanged = { [weak self] callInfo in
             guard let self, self.autoRecordZoom else { return }
@@ -101,31 +87,10 @@ final class MeetingCapture: NSObject, ObservableObject {
         zoomWatcher.start()
     }
 
-    func connectCalendar() {
-        calendarOAuth?.connect()
-    }
-
-    func disconnectCalendar() {
-        calendarOAuth?.disconnect()
-        calendarConnected = false
-        calendarError = nil
-    }
-
-    private func setupCalendarOAuth() {
-        let configURL = Self.calendarConfigURL
-        guard let data = try? Data(contentsOf: configURL),
-            let config = try? JSONDecoder().decode(GoogleOAuthConfiguration.self, from: data)
-        else { return }
-        let oauth = GoogleOAuth(configuration: config)
-        calendarOAuth = oauth
-        calendarClient = GoogleCalendarClient(configuration: config)
-        calendarConnected = oauth.isConnected
-        calendarObserver = NotificationCenter.default.addObserver(
-            forName: GoogleOAuth.changedNotification, object: nil, queue: .main
-        ) { [weak self, weak oauth] _ in
-            self?.calendarConnected = oauth?.isConnected ?? false
-            self?.calendarConnecting = oauth?.isConnecting ?? false
-            self?.calendarError = oauth?.errorMessage
+    private func requestCalendarAccess() {
+        Task {
+            let granted = await calendarClient.requestAccess()
+            calendarError = granted ? nil : LocalCalendarClient.CalendarError.accessDenied.errorDescription
         }
     }
 
@@ -340,7 +305,6 @@ final class MeetingCapture: NSObject, ObservableObject {
     }
 
     private func enrichCalendarMetadata(for sessionDir: URL, start: Date, end: Date) async -> URL? {
-        guard let calendarClient else { return sessionDir }
         do {
                 let events = try await calendarClient.events(
                     from: start.addingTimeInterval(-15 * 60),
@@ -353,7 +317,7 @@ final class MeetingCapture: NSObject, ObservableObject {
                 case .matched(let event, let confidence):
                     metadata["calendar"] = [
                         "status": "matched",
-                        "provider": "google",
+                        "provider": "eventkit",
                         "calendar_id": event.calendarID,
                         "event_id": event.id,
                         "summary": event.summary,
@@ -366,9 +330,9 @@ final class MeetingCapture: NSObject, ObservableObject {
                         metadata["meeting_title"] = event.summary
                     }
                 case .ambiguous:
-                    metadata["calendar"] = ["status": "ambiguous", "provider": "google"]
+                    metadata["calendar"] = ["status": "ambiguous", "provider": "eventkit"]
                 case .noMatch:
-                    metadata["calendar"] = ["status": "no_match", "provider": "google"]
+                    metadata["calendar"] = ["status": "no_match", "provider": "eventkit"]
                 }
                 self.writeMetadataObject(metadata, to: metadataURL)
                 guard case .matched(let event, _) = CalendarMatcher.match(
